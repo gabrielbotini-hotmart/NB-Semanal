@@ -753,11 +753,18 @@ function sdrEstoqueBars(all){
 }
 // status ATUAL (hoje) dos leads, agrupados pela SEMANA DE CONTATO: barras empilhadas
 // (contacted/connected/nurturing/qualified/unqualified) por semana — coorte × situação de hoje.
-function sdrStatusHTML(estrF){ return sdrStatusBars((D.sdrCohortStatus&&D.sdrCohortStatus[estrF||'all'])||{}); }
+// 23/08/2026 (a pedido do Gabriel): card ganhou um toggle C1/C2/C3 (coorte de MESMA semana,
+// D.sdrCohort) × % atual (qualified/unqualified de HOJE, D.sdrCohortStatus — o que já existia).
+// Só passado na Semanal Área (estratégia) — o 1:1 Gestor (por pessoa) não tem qual/qualDirect
+// por pessoa ainda (só contacted/conn em D.sdrOwnerCohort), então cai no comportamento antigo
+// (sem toggle, só a linha de % atual) quando cohRaw não é passado — ver personStatusBars.
+function setSdrStatusView(v){state.sdrStatusView=v;renderArea();}
+function sdrStatusHTML(estrF){ return sdrStatusBars((D.sdrCohortStatus&&D.sdrCohortStatus[estrF||'all'])||{}, (D.sdrCohort&&D.sdrCohort[estrF||'all'])||{}); }
 // núcleo do gráfico de Status SDR — extraído (05/08/2026), ver sdrEstoqueBars acima.
-function sdrStatusBars(srcRaw){
+function sdrStatusBars(srcRaw, cohRaw){
   const gran=state.evolGran||'semana';
   const src=gran==='mes'?statusParaMes(srcRaw):srcRaw;
+  const coh=cohRaw?(gran==='mes'?statusParaMes(cohRaw):cohRaw):null;
   const weeks=Object.keys(src).sort().slice(gran==='mes'?-12:-16);
   if(!weeks.length) return '<span class="miss">Sem dado.</span>';
   const ST=[['unqualified','#FDA29B'],['qualified','#6CE9A6'],['nurturing','#FEC6A1'],['connected','#B0B7C3'],['contacted','#E4E7EC']];
@@ -771,10 +778,25 @@ function sdrStatusBars(srcRaw){
       <div class="etot">${fN(tot)}</div>${segs}
       <div class="ecap">${gran==='mes'?mesLabelShort(w):w.replace('2025-','25').replace('2026-','26')}</div></div>`;
   }).join('');
-  const legend=`<div class="legend" style="margin:0 0 10px"><span><i class="sw" style="background:#E4E7EC"></i>Contacted</span><span><i class="sw" style="background:#B0B7C3"></i>Connected</span><span><i class="sw" style="background:#FEC6A1"></i>Nurturing</span><span><i class="sw" style="background:#6CE9A6"></i>Qualified</span><span><i class="sw" style="background:#FDA29B"></i>Unqualified</span></div>`;
-  const data=weeks.map(w=>{const s=src[w],t=totW(s);const c=t?Math.round(s.qualified/t*100):null;return `<div class="edcell">${c!=null?c+'%':'—'}</div>`;}).join('');
-  return `${legend}<div class="estoque">${cols}</div>
-    <div class="edata-lbl">Conversão da safra · qualified / total contatados</div><div class="edata">${data}</div>`;
+  const toggle=coh?`<div class="gtoggle"><button class="${state.sdrStatusView!=='atual'?'on':''}" onclick="setSdrStatusView('cohort')">C1/C2/C3</button><button class="${state.sdrStatusView==='atual'?'on':''}" onclick="setSdrStatusView('atual')">% atual</button></div>`:'';
+  const legend=`<div class="legend" style="margin:0 0 10px;justify-content:space-between"><span><span><i class="sw" style="background:#E4E7EC"></i>Contacted</span><span><i class="sw" style="background:#B0B7C3"></i>Connected</span><span><i class="sw" style="background:#FEC6A1"></i>Nurturing</span><span><i class="sw" style="background:#6CE9A6"></i>Qualified</span><span><i class="sw" style="background:#FDA29B"></i>Unqualified</span></span>${toggle}</div>`;
+  const rowHTML=(lbl,fn)=>`<div class="edata-lbl">${lbl}</div><div class="edata">${weeks.map(w=>{const v=fn(w);return `<div class="edcell">${v!=null?v+'%':'—'}</div>`;}).join('')}</div>`;
+  let rows;
+  if(coh&&state.sdrStatusView!=='atual'){
+    // coortes de MESMA SEMANA (D.sdrCohort) — mesma conta do card do topo da página SDR:
+    // C1 = conectou/contatou · C2 = qualificou/conectou (do sub-coorte que já conectou na
+    // semana) · C3 = qualificou/contatou direto (não exige conexão na mesma semana).
+    const c1=w=>{const c=coh[w];return c&&c.contacted?Math.round((c.conn||0)/c.contacted*100):null;};
+    const c2=w=>{const c=coh[w];return c&&c.conn?Math.round((c.qual||0)/c.conn*100):null;};
+    const c3=w=>{const c=coh[w];return c&&c.contacted?Math.round((c.qualDirect||0)/c.contacted*100):null;};
+    rows=rowHTML('C1 · Contacted→Connected',c1)+rowHTML('C2 · Connected→Qualified',c2)+rowHTML('C3 · Contacted→Qualified',c3);
+  } else {
+    // % atual (status de HOJE da safra, não coorte de mesma semana) — comportamento original.
+    const pq=w=>{const s=src[w],t=totW(s);return t?Math.round(s.qualified/t*100):null;};
+    const pu=w=>{const s=src[w],t=totW(s);return t?Math.round(s.unqualified/t*100):null;};
+    rows=rowHTML('% Qualified · status atual',pq)+rowHTML('% Unqualified · status atual',pu);
+  }
+  return `${legend}<div class="estoque">${cols}</div>${rows}`;
 }
 // status ATUAL (hoje) dos leads, agrupados pela SEMANA DE ENTRADA NO CLOSER (opp): barras
 // empilhadas (opp/sql/offer/contract/closed_won/lost_deal) — mesmo padrão do sdrStatusHTML,
@@ -1764,6 +1786,44 @@ function personStatusBars(kind,email){
   if(kind==='closer') return closerStatusBars((D.closerCohortStatusPessoa&&D.closerCohortStatusPessoa[email])||{});
   return onbStatusBars((D.onbCohortStatusPessoa&&D.onbCohortStatusPessoa[email])||{});
 }
+// export CSV do card "Status atual por safra" (SDR, 1:1 Gestor) — 23/08/2026, a pedido do
+// Gabriel: 1 linha por lead (não agregado), pra dar pra filtrar "quem está em Connected na
+// semana X" de uma pessoa específica. Só lead_id como identificador (nunca nome/e-mail/
+// telefone do lead cru — mesma barreira de privacidade da tela de validação de Onboarding).
+// Dado vem de sdr_leads_data.js (arquivo À PARTE, não carregado no <head> pra não pesar o
+// carregamento inicial do dashboard inteiro) — carregado sob demanda, na 1ª vez que o botão é
+// clicado, via <script> injetado (fetch() não funciona em file:// sem servidor).
+let sdrLeadsLoading=false;
+function loadSdrLeadsThen(cb){
+  if(window.SDR_LEADS){ cb(); return; }
+  if(sdrLeadsLoading){ setTimeout(()=>loadSdrLeadsThen(cb),200); return; }
+  sdrLeadsLoading=true;
+  const s=document.createElement('script');
+  s.src='sdr_leads_data.js';
+  s.onload=cb;
+  s.onerror=()=>{ sdrLeadsLoading=false; alert('Não foi possível carregar sdr_leads_data.js — rode "node app/build_data.js" pra gerar o arquivo.'); };
+  document.head.appendChild(s);
+}
+function exportSdrLeadsCsv(email){
+  loadSdrLeadsThen(()=>{
+    // mesmas últimas 16 semanas do card (mesma fonte/slice de sdrStatusBars — D.sdrCohortStatusPessoa
+    // dessa pessoa), independente do toggle Semana/Mês do card (export é sempre por semana, já que o
+    // dado é por lead individual, não faz sentido agrupar por mês aqui).
+    const weeks16=Object.keys((D.sdrCohortStatusPessoa&&D.sdrCohortStatusPessoa[email])||{}).sort().slice(-16);
+    const weeksSet=new Set(weeks16);
+    const rows=(window.SDR_LEADS||[]).filter(r=>r.owner===email&&weeksSet.has(r.semana));
+    if(!rows.length){ alert('Sem leads pra exportar.'); return; }
+    const cols=['leadId','semana','status','estr','contacted','connected','nurturing','qualified','unqualified'];
+    const header=['lead_id','semana','status_atual','estrategia','contacted_date','connected_date','nurturing_date','qualified_date','unqualified_date'];
+    const esc=v=>v==null?'':String(v).replace(/"/g,'""');
+    const csv=[header.join(';')].concat(rows.map(r=>cols.map(c=>`"${esc(r[c])}"`).join(';'))).join('\n');
+    const blob=new Blob(['﻿'+csv],{type:'text/csv;charset=utf-8'});
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);
+    a.download=`sdr_leads_${email.split('@')[0]}.csv`;
+    document.body.appendChild(a); a.click(); a.remove();
+  });
+}
 // tabela "safrada" por pessoa (05/08/2026): mesmas métricas semanais já calculadas em
 // p.porSemana (build_data.js), só que com SEMANA POR LINHA em vez de por coluna — mais fácil de
 // ler várias semanas seguidas de uma pessoa só no 1:1.
@@ -1866,7 +1926,7 @@ function renderOneOne(){
       <div class="sec" style="margin-top:16px"><div class="sec-head"><h2>Evolução do funil</h2>${granToggleHTML()}</div>
         <div class="grid g2">
           <div class="card">${cardHd(KIC.estoque,'Estoque · '+displayName(sel.p),null)}${estoqueHTML}</div>
-          <div class="card">${cardHd(KIC.check,'Status atual por safra · '+displayName(sel.p),null)}${statusHTML}</div>
+          <div class="card">${cardHd(KIC.check,'Status atual por safra · '+displayName(sel.p),sel.kind==='sdr'?`<div class="gtoggle" style="display:inline-flex"><button class="on" onclick="exportSdrLeadsCsv('${sel.p.email}')">⬇ Exportar CSV</button></div>`:null)}${statusHTML}</div>
         </div>
       </div>
       <div class="sec" style="margin-top:16px"><div class="sec-head"><h2>Informações safradas por semana</h2><span class="hint">${displayName(sel.p)} · últimas ${semanasTabela.length} semanas, mais recente primeiro</span></div>

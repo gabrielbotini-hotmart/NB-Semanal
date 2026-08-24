@@ -217,6 +217,14 @@ const sdrCohortStatus = { all: {}, Outbound: {}, Inbound: {}, Hunting: {} }; // 
 // (05/08/2026, a pedido do Gabriel). Preenchido lazy (owner -> W -> {status:n}) dentro do loop
 // principal, junto com sdrCohortStatus.
 const sdrCohortStatusPessoa = {};
+// registro por LEAD (23/08/2026, a pedido do Gabriel): alimenta o botão "Exportar CSV" do card
+// "Status atual por safra" no 1:1 Gestor — mesma população/status de sdrCohortStatusPessoa
+// (ownerReal), só que 1 linha por lead em vez de agregado, pra dar pra filtrar "quem está em
+// Connected na semana X" de uma pessoa específica. Só lead_id como identificador (nunca
+// nome/e-mail/telefone do lead cru — mesma barreira de privacidade da tela de validação de
+// Onboarding, ver Dados/README.md). Escrito num arquivo À PARTE (sdr_leads_data.js), mesmo
+// motivo do onbLeadsValidacao: não inflar o app_data.js principal.
+const sdrLeadsValidacao = [];
 const sdrContactFteSet = { all: {}, Outbound: {}, Inbound: {}, Hunting: {} }; // estr -> W -> Set(owner SDR real que contatou)
 const sdrOppsNivelAcc = { all: {}, Outbound: {}, Inbound: {}, Hunting: {} }; // opps por nível×semana, só SDR real
 // coorte de negociação POR SEMANA (funil Closer): dos leads que viraram opp na semana W,
@@ -547,7 +555,14 @@ for (const r of fop) {
     for (const k of ['connected', 'nurturing', 'qualified', 'unqualified']) if (sd[k] && sd[k] >= bestD) { bestD = sd[k]; status = k; }
     const bumpSt = o => { const cc = o[wc] || (o[wc] = { contacted: 0, connected: 0, nurturing: 0, qualified: 0, unqualified: 0 }); cc[status]++; };
     if (ownerReal) { bumpSt(sdrCohortStatus.all); if (_estrLead) bumpSt(sdrCohortStatus[_estrLead]); }
-    if (ownerReal && owner) bumpSt(sdrCohortStatusPessoa[owner] || (sdrCohortStatusPessoa[owner] = {}));
+    if (ownerReal && owner) {
+      bumpSt(sdrCohortStatusPessoa[owner] || (sdrCohortStatusPessoa[owner] = {}));
+      sdrLeadsValidacao.push({
+        leadId: r.lead_id || null, owner, semana: wc, status,
+        contacted: sd.contacted, connected: sd.connected, nurturing: sd.nurturing, qualified: sd.qualified, unqualified: sd.unqualified,
+        estr: _estrLead || null,
+      });
+    }
   }
 
   // coorte semanal de negociação (Closer): denom = virou opp em W; C1 = chegou a SQL em W;
@@ -1579,8 +1594,13 @@ fs.writeFileSync(outDir + 'app_data.js', 'window.DATA = ' + JSON.stringify(DATA)
 // ⚠️ arquivo À PARTE, só pra tela de validação (validacao_onboarding_pessoa.html) — não é lido
 // pelo app principal (index.html), tirar os dois quando a homologação terminar.
 fs.writeFileSync(outDir + 'validacao_onboarding_data.js', 'window.VALIDACAO_ONB = ' + JSON.stringify(onbLeadsValidacao) + ';');
+// ⚠️ arquivo À PARTE (23/08/2026, botão "Exportar CSV" do card "Status atual por safra" no
+// 1:1 Gestor de SDR) — não é lido pelo app principal fora desse botão, mesmo motivo do
+// validacao_onboarding_data.js (não inflar o app_data.js que o dashboard inteiro carrega).
+fs.writeFileSync(outDir + 'sdr_leads_data.js', 'window.SDR_LEADS = ' + JSON.stringify(sdrLeadsValidacao) + ';');
 console.log('OK app_data.js — meses:', meses.length, '| semanas:', semanas.length, '| leads (operacional_raw):', fop.length);
 console.log('OK validacao_onboarding_data.js —', onbLeadsValidacao.length, 'registros (opp_id)');
+console.log('OK sdr_leads_data.js —', sdrLeadsValidacao.length, 'registros (lead_id)');
 console.log('ultimo mes actual:', Object.keys(actualMensal).sort().pop());
 console.log('mes fechado:', mesFechado.mes, '(anterior:', mesFechado.mesAnterior + ')');
 console.log('semana fechada:', semanaFechada.semana, '(anterior:', semanaFechada.semanaAnterior + ')');
