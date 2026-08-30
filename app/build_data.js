@@ -227,6 +227,7 @@ const sdrCohortStatusPessoa = {};
 const sdrLeadsValidacao = [];
 const sdrContactFteSet = { all: {}, Outbound: {}, Inbound: {}, Hunting: {} }; // estr -> W -> Set(owner SDR real que contatou)
 const sdrOppsNivelAcc = { all: {}, Outbound: {}, Inbound: {}, Hunting: {} }; // opps por nível×semana, só SDR real
+const sdrOppsGmvAcc = {}; // semana (criação da opp) -> soma de amount_12_months (In+Out, só SDR real)
 // coorte de negociação POR SEMANA (funil Closer): dos leads que viraram opp na semana W,
 // quantos chegaram a SQL na PRÓPRIA semana W (C1); e, do sub-coorte que chegou a SQL na
 // mesma semana, quantos chegaram a Offer também na mesma semana (C2, encadeado — mesmo
@@ -715,6 +716,11 @@ for (const r of fop) {
       if (ownerReal && NIVEIS.includes(b)) { // opps por nível só de SDR real (alimenta a página)
         (sdrOppsNivelAcc.all[w] = sdrOppsNivelAcc.all[w] || {})[b] = (sdrOppsNivelAcc.all[w][b] || 0) + 1;
         if (e) (sdrOppsNivelAcc[e][w] = sdrOppsNivelAcc[e][w] || {})[b] = (sdrOppsNivelAcc[e][w][b] || 0) + 1;
+        // GMV das opps geradas na semana (29/08/2026, a pedido do Gabriel: cards "GMV gerado em
+        // Opps"/"Ticket médio" da visão de gráficos da SDR) — soma de amount_12_months (mesmo
+        // campo que já bucketiza o nível), atribuída à semana de CRIAÇÃO da opp, não à semana da
+        // venda. Só Inbound/Outbound (exclui Hunting), mesmo recorte "In + Out" do resto da seção.
+        if (e === 'Inbound' || e === 'Outbound') sdrOppsGmvAcc[w] = (sdrOppsGmvAcc[w] || 0) + num(r.amount_12_months);
       }
       if (sdr) {
         const p = getP(porPessoaSdr, sdr);
@@ -1156,6 +1162,25 @@ const closerOppFte = blankKeys(CO_KEYS);
 for (const k of CO_KEYS) for (const w in closerOppFteSet[k]) closerOppFte[k][w] = closerOppFteSet[k][w].size;
 const closerCwFte = blankKeys(CO_KEYS);
 for (const k of CO_KEYS) for (const w in closerCwFteSet[k]) closerCwFte[k][w] = closerCwFteSet[k][w].size;
+// headcount REAL de closers por nível × mês (24/08/2026, a pedido do Gabriel, pro card "Opps
+// por closer · por nível" da Semanal Área > Closer): usa TODO o histórico de
+// Dados/sales_goals.csv (não só o mês mais recente, ao contrário de cargoAtualPorEmail acima) —
+// conta pessoas distintas por Função=CSR (Closer) × "Estratégia completa" (nível) × mês (coluna
+// Data), excluindo quem está em Fase "Offboarding" naquele mês (saindo do nível, não conta como
+// força de trabalho ativa). Substitui um proxy anterior (closers que abriram opp numa janela
+// móvel de 8 semanas) que o Gabriel pediu pra descartar em favor do dado real de roster.
+const closerHeadcountMes = {}; NIVEIS.forEach(n => closerHeadcountMes[n] = {});
+{
+  const porMesNivel = {}; // mes (YYYY-MM) -> nivel -> Set(email)
+  readSalesGoalsCsv().forEach(r => {
+    if (r.funcao !== 'CSR' || !r.email || !NIVEIS.includes(r.nivel) || r.fase === 'Offboarding') return;
+    const [dd, mm, yy] = r.data.split('/'); if (!dd || !mm || !yy) return;
+    const mes = `${yy}-${mm.padStart(2, '0')}`;
+    const porNivel = porMesNivel[mes] || (porMesNivel[mes] = {});
+    (porNivel[r.nivel] || (porNivel[r.nivel] = new Set())).add(r.email);
+  });
+  for (const mes in porMesNivel) for (const n of NIVEIS) if (porMesNivel[mes][n]) closerHeadcountMes[n][mes] = porMesNivel[mes][n].size;
+}
 // onboarders distintos que receberam CW / que ativaram 10k por semana — denominador do
 // "CW/FTE" e "Ativado/FTE" do Onboarding.
 const onbCwFte = blankKeys(CO_KEYS);
@@ -1577,9 +1602,9 @@ const DATA = {
   porPessoa: { sdr: sdrList, closer: closerList, onboarding: onbList },
   semanalPorNivel,
   fte, fteSemanal,
-  sdrEstoque, sdrCohort, sdrOwnerCohort, sdrUnq, sdrOppsNivel, sdrOppFte, sdrCohortStatus, sdrContactFte,
+  sdrEstoque, sdrCohort, sdrOwnerCohort, sdrUnq, sdrOppsNivel, sdrOppsGmv: sdrOppsGmvAcc, sdrOppFte, sdrCohortStatus, sdrContactFte,
   diasUteisSemana, closerEstoque, onbEstoque,
-  closerCohort, closerCohortSqlCw, closerLost, closerCw: closerCwAcc, closerCohortStatus, closerOppFte, closerCwFte,
+  closerCohort, closerCohortSqlCw, closerLost, closerCw: closerCwAcc, closerCohortStatus, closerOppFte, closerCwFte, closerHeadcountMes,
   onbCohort, onbAct: onbActAcc, onbCohortStatus, onbCwFte, onbActFte,
   mesFechado, semanaFechada,
   onbEstoquePorPessoa, // ⚠️ temporário — homologação do Estoque de ativação (03/08/2026), tirar depois

@@ -357,7 +357,7 @@ function avatarHTML(p,size){
 function median(arr){const a=[...arr].filter(v=>v!=null).sort((x,y)=>x-y);const n=a.length;if(!n)return 0;return n%2?a[(n-1)/2]:(a[n/2-1]+a[n/2])/2;}
 
 // ---- estado ----
-let state={meeting:'mensal',area:'sdr',mes:null,semana:null,estr:'all',nivel:'all',ref:'budget',mesArea:null,semanaArea:null,refArea:'budget',estrArea:'all',nivelArea:'all',evolGran:'semana',onbStatusPct100:false,mesMensal:null,estrMensal:'all',refMensal:'budget',pessoa:null,sdrSort:null,closerSort:null,onbSort:null,mesOneOne:null,semanaOneOne:null,areaOneOne:'sdr',cohortTab:'all'};
+let state={meeting:'mensal',area:'sdr',mes:null,semana:null,estr:'all',nivel:'all',ref:'budget',mesArea:null,semanaArea:null,refArea:'budget',estrArea:'all',nivelArea:'all',evolGran:'semana',onbStatusPct100:false,mesMensal:null,estrMensal:'all',refMensal:'budget',pessoa:null,sdrSort:null,closerSort:null,onbSort:null,mesOneOne:null,semanaOneOne:null,areaOneOne:'sdr',cohortTab:'all',sdrView:'tabela'};
 // AREA_TABS usa as chaves da Semanal Área (sdr/closers/onboarding); o 1:1 Gestor guarda
 // pessoas com outra convenção (sdr/closer/onb, ver allPeople()) — mapa entre as duas.
 const AREA_TO_ONEONE_KIND={sdr:'sdr',closers:'closer',onboarding:'onb'};
@@ -374,21 +374,31 @@ const AREA_TABS=[{k:'sdr',label:'SDR'},{k:'closers',label:'Closers'},{k:'onboard
 function mesLabel(m){if(!m)return '—';const [y,mm]=m.split('-');const nomes=['jan','fev','mar','abr','mai','jun','jul','ago','set','out','nov','dez'];return nomes[+mm-1]+'/'+y;}
 
 // ---- WeekTrend: pequeno múltiplo de 4 semanas (Últ. em destaque) ----
-function weekTrendHTML({label,sub,color,series,fmt,targets,flat,accentLabel}){
+function weekTrendHTML({label,sub,color,series,fmt,targets,flat,accentLabel,labelLast,height}){
   fmt=fmt||fN;
+  const plotH=height||100;
   const vals=(series||[]).map(s=>s.valor);
   const tvals=(targets||[]).filter(v=>v!=null&&v>0);
   const max=(Math.max(...vals,...tvals,1))*1.18;
   const last=vals.length?vals[vals.length-1]:null;
   const prior=vals.length>1?vals[vals.length-2]:null;
   const wow=(prior!=null&&prior>0&&last!=null)?Math.round((last-prior)/prior*100):null;
+  // labelLast (25/08/2026, a pedido do Gabriel: cards de GMV/Ticket médio da SDR): valor
+  // formatado em R$ é mais largo que uma coluna de 12 semanas — rotular todas as colunas fazia
+  // os números colarem uns nos outros. Com labelLast, só as últimas N colunas mostram o valor
+  // (as demais continuam com o valor no title/tooltip do hover). Sem o parâmetro, mantém o
+  // comportamento de sempre (todas rotuladas — gráficos de contagem, números curtos).
+  // height (30/08/2026, a pedido do Gabriel: cards de GMV/Ticket médio) — a área do gráfico
+  // (.wtplot) é 100px por padrão via CSS; passar height estica só esse gráfico (estilo inline
+  // sobrepõe a classe), escalando as barras/meta proporcionalmente — não mexe nos outros usos.
   const cols=(series||[]).map((s,i)=>{
-    const h=Math.max(2,(s.valor/max)*100);
+    const h=Math.max(2,(s.valor/max)*plotH);
     const isLast=i===series.length-1;
+    const showVal=!labelLast||i>=series.length-labelLast;
     const t=targets?targets[i]:null;
-    const tgt=(t!=null&&t>0)?`<div class="wttgt" style="bottom:${Math.min(100,(t/max)*100)}px"></div>`:'';
+    const tgt=(t!=null&&t>0)?`<div class="wttgt" style="bottom:${Math.min(plotH,(t/max)*plotH)}px"></div>`:'';
     return `<div class="wtcol" title="${s.semana}: ${fmt(s.valor)}${(t!=null&&t>0)?' · meta '+fmt(t):''}">
-      <div class="wtplot"><div class="wtval ${!flat&&isLast?'cur':''}">${fmt(s.valor)}</div>
+      <div class="wtplot" style="height:${plotH}px"><div class="wtval ${!flat&&isLast?'cur':''}">${showVal?fmt(s.valor):''}</div>
       <div class="wtbar" style="height:${h}px;background:${color};opacity:${flat?1:(isLast?1:.4)}"></div>${tgt}</div>
       <div class="wtlbl ${!flat&&isLast?'cur':''}">${s.semana.replace(/^\d{4}-/,'')}</div></div>`;
   }).join('');
@@ -397,6 +407,56 @@ function weekTrendHTML({label,sub,color,series,fmt,targets,flat,accentLabel}){
     ${wow!=null?`<span class="wtwow ${wow>=0?'up':'down'}">${wow>=0?'▲':'▼'} ${Math.abs(wow)}% WoW</span>`:''}</div>
     <div class="wtchart">${cols||'<span class="miss">sem dado</span>'}</div>
   </div>`;
+}
+// barras empilhadas por semana (25/08/2026, a pedido do Gabriel: visão "Opps por nível", pedida
+// pela diretoria, inspirada numa referência externa) — mesmo esqueleto visual do weekTrendHTML
+// (.wt/.wtcol/.wtbar/.wttgt), só que o .wtbar vira um flex column-reverse com 1 div por
+// segmento em vez de 1 cor sólida, pra empilhar os níveis dentro da mesma barra.
+function stackedWeeksHTML({weeks,dataByWeek,targets,keys,colors,fmt}){
+  fmt=fmt||fN;
+  if(!weeks||!weeks.length) return '<span class="miss">Sem dado suficiente para o período.</span>';
+  const totals=weeks.map(w=>keys.reduce((s,k)=>s+((dataByWeek(w)||{})[k]||0),0));
+  const tvals=(targets||[]).filter(v=>v!=null&&v>0);
+  const max=Math.max(...totals,...tvals,1)*1.18;
+  const cols=weeks.map((w,i)=>{
+    const d=dataByWeek(w)||{}, total=totals[i], h=Math.max(2,(total/max)*100);
+    const t=targets?targets[i]:null;
+    const tgt=(t!=null&&t>0)?`<div class="wttgt" style="bottom:${Math.min(100,(t/max)*100)}px"></div>`:'';
+    const segs=keys.map(k=>{const v=d[k]||0,segH=total?(v/total)*h:0;return segH?`<div style="height:${segH}px;background:${colors[k]}"></div>`:'';}).join('');
+    return `<div class="wtcol" title="${w}: ${fmt(total)}${(t!=null&&t>0)?' · meta '+fmt(t):''}">
+      <div class="wtplot"><div class="wtval">${fmt(total)}</div>
+      <div class="wtbar" style="height:${h}px;background:none;display:flex;flex-direction:column-reverse;overflow:hidden">${segs}</div>${tgt}</div>
+      <div class="wtlbl">${w.replace(/^\d{4}-/,'')}</div></div>`;
+  }).join('');
+  const legend=`<div class="legend" style="margin-top:10px">${keys.map(k=>`<span><i class="sw" style="background:${colors[k]}"></i>${k}</span>`).join('')}${tvals.length?'<span><i class="sw" style="background:none;border-top:2px dashed var(--text);height:0;width:12px"></i>Meta</span>':''}</div>`;
+  return `<div class="wt"><div class="wtchart">${cols}</div></div>${legend}`;
+}
+// comparação de 2 barras (Real MTD vs Budget MTD), cada uma empilhada pelas mesmas chaves —
+// mesmo padrão visual do stackedWeeksHTML acima, só que com 2 colunas fixas em vez de semanas.
+function mtdCompareHTML({real,budget,keys,colors,fmt}){
+  fmt=fmt||fN;
+  const realTot=keys.reduce((s,k)=>s+(real[k]||0),0), budTot=keys.reduce((s,k)=>s+(budget[k]||0),0);
+  if(!realTot&&!budTot) return '<span class="miss">Sem dado suficiente para o mês.</span>';
+  const max=Math.max(realTot,budTot,1)*1.18;
+  const bar=(vals,total,label)=>{
+    const h=Math.max(2,(total/max)*100);
+    // valor de cada segmento em branco, centralizado (28/08/2026, a pedido do Gabriel: saber
+    // quanto de Inbound/Outbound compõe o total sem precisar passar o mouse) — só rotula se o
+    // segmento for alto o bastante pra caber o número sem espremer.
+    const segs=keys.map(k=>{const v=vals[k]||0,segH=total?(v/total)*h:0;
+      return segH?`<div style="height:${segH}px;background:${colors[k]};display:flex;align-items:center;justify-content:center;overflow:hidden" title="${k}: ${fmt(v)}">${segH>=12?`<span style="color:#fff;font-size:10px;font-weight:700;font-family:var(--font-mono)">${fmt(v)}</span>`:''}</div>`:'';
+    }).join('');
+    return `<div class="wtcol" title="${label}: ${fmt(total)}">
+      <div class="wtplot"><div class="wtval cur">${fmt(total)}</div>
+      <div class="wtbar" style="height:${h}px;background:none;display:flex;flex-direction:column-reverse;overflow:hidden;max-width:64px">${segs}</div></div>
+      <div class="wtlbl cur">${label}</div></div>`;
+  };
+  const ating=budTot?Math.round(realTot/budTot*100):null;
+  const legend=`<div class="legend" style="margin-top:10px">${keys.map(k=>`<span><i class="sw" style="background:${colors[k]}"></i>${k}</span>`).join('')}</div>`;
+  return `<div class="wt">
+    ${ating!=null?`<div style="text-align:right;margin-bottom:8px"><span class="wtwow ${ating>=100?'up':'down'}">Atingimento: ${ating}%</span></div>`:''}
+    <div class="wtchart" style="justify-content:center;gap:36px">${bar(real,realTot,'Real MTD')}${bar(budget,budTot,'Budget MTD')}</div>
+    ${legend}</div>`;
 }
 function weeklyTotals(metricObj){
   const weeks=Object.keys(metricObj||{}).sort();
@@ -759,6 +819,15 @@ function sdrEstoqueBars(all){
 // por pessoa ainda (só contacted/conn em D.sdrOwnerCohort), então cai no comportamento antigo
 // (sem toggle, só a linha de % atual) quando cohRaw não é passado — ver personStatusBars.
 function setSdrStatusView(v){state.sdrStatusView=v;renderArea();}
+// toggle "Visualizar gráficos" (25/08/2026, a pedido da diretoria via Gabriel): troca o
+// conteúdo inteiro da aba SDR por uma visão de gráficos (Opps Inbound/Outbound por nível +
+// MTD Real vs Budget), sem duplicar os filtros do topo (mês/semana/estratégia continuam
+// valendo pro cabeçalho, mas os gráficos sempre olham Inbound/Outbound juntos, igual a
+// referência mostrada). Mesmo padrão de toggle do gtoggle usado no C1/C2/C3 do sdrStatusView.
+function setSdrView(v){state.sdrView=v;renderArea();}
+function sdrViewToggleHTML(){
+  return `<div class="gtoggle"><button class="${state.sdrView!=='graficos'?'on':''}" onclick="setSdrView('tabela')">Tabela</button><button class="${state.sdrView==='graficos'?'on':''}" onclick="setSdrView('graficos')">Visualizar gráficos</button></div>`;
+}
 function sdrStatusHTML(estrF){ return sdrStatusBars((D.sdrCohortStatus&&D.sdrCohortStatus[estrF||'all'])||{}, (D.sdrCohort&&D.sdrCohort[estrF||'all'])||{}); }
 // núcleo do gráfico de Status SDR — extraído (05/08/2026), ver sdrEstoqueBars acima.
 function sdrStatusBars(srcRaw, cohRaw){
@@ -797,6 +866,99 @@ function sdrStatusBars(srcRaw, cohRaw){
     rows=rowHTML('% Qualified · status atual',pq)+rowHTML('% Unqualified · status atual',pu);
   }
   return `${legend}<div class="estoque">${cols}</div>${rows}`;
+}
+// "Opps por closer" (estoque atual ÷ headcount real de closers) por nível de cliente — pedido do
+// Gabriel (24/08/2026), inspirado num gráfico de referência (Closer Analytics, arquivo de
+// outro time, só pra inspiração visual — não pra validar números): mostra as 3 faixas
+// (N2-N3/N4-N5/N6+) juntas, uma linha cada, pra comparar a carga de trabalho por closer entre
+// níveis — diferente do card de Estoque acima (que respeita o filtro de estratégia/nível ativo),
+// este ignora o filtro e sempre mostra as 3 faixas lado a lado. Denominador = D.closerHeadcountMes
+// (build_data.js): headcount REAL de closers por nível, calculado do histórico completo de
+// Dados/sales_goals.csv (Função=CSR × "Estratégia completa" × mês, excluindo Offboarding) — cada
+// semana usa o headcount do MÊS a que ela pertence (D.semanaMes[semana]). Testado em 24/08/2026:
+// um proxy anterior (closers que abriram opp numa janela móvel de 8 semanas) dava número 2-3x
+// mais alto e muito mais volátil — esse headcount real bate muito melhor com a ordem de grandeza
+// esperada (ex.: N2-N3 em ago/2026 ficou em 6 pessoas ativas, conferido linha a linha).
+const CLOSER_FTE_NIV_COLORS=[['N2-N3','#F04438'],['N4-N5','#12B76A'],['N6+','#101828']];
+function closerOppsPorFteHTML(){
+  // só semanas FECHADAS (24/08/2026, a pedido do Gabriel): a semana corrente (em andamento) tem
+  // snapshot parcial e ficava repetindo o mesmo valor da semana fechada anterior — 2 pontos quase
+  // iguais coladas no fim do gráfico, com os rótulos se sobrepondo. D.semanaFechada.semana vem do
+  // build_data.js (última semana < semana de hoje).
+  const ultimaFechada=D.semanaFechada&&D.semanaFechada.semana;
+  const rowsFechadas=((D.closerEstoque&&D.closerEstoque.all)||[]).filter(r=>!ultimaFechada||r.semana<=ultimaFechada);
+  const baseWeeks=rowsFechadas.slice(-6).map(r=>r.semana);
+  if(!baseWeeks.length) return '<span class="miss">Sem série de estoque — regenere o app_data.js com o build_data.js atualizado.</span>';
+  const n=baseWeeks.length;
+  const series=CLOSER_FTE_NIV_COLORS.map(([niv,color])=>{
+    const estByWeek={}; ((D.closerEstoque&&D.closerEstoque[niv])||[]).forEach(r=>estByWeek[r.semana]=r);
+    const headcountPorMes=(D.closerHeadcountMes&&D.closerHeadcountMes[niv])||{};
+    const vals=baseWeeks.map(w=>{
+      const r=estByWeek[w], mes=D.semanaMes&&D.semanaMes[w], head=mes?headcountPorMes[mes]:null;
+      if(!r||!head) return null;
+      return Math.round((r.opp+r.issues+r.sql+r.offer+r.contract)/head*10)/10;
+    });
+    return {niv,color,vals};
+  });
+  const allVals=series.flatMap(s=>s.vals).filter(v=>v!=null);
+  if(!allVals.length) return '<span class="miss">Sem dado suficiente (sem headcount de closer por nível pro período — confira Dados/sales_goals.csv).</span>';
+  // eixo Y começa perto do MENOR valor real, não fixo em 0 (30/08/2026, a pedido do Gabriel: as
+  // linhas ficavam espremidas numa fatia pequena lá em cima, com a metade de baixo do gráfico
+  // vazia, porque os valores (17-26) nunca chegam perto de 0) — "zoom" na faixa que realmente
+  // varia, com uma margem de 15% pra não colar a linha mais baixa no rodapé.
+  const maxV=Math.max(...allVals), rawMinV=Math.min(...allVals), pad=(maxV-rawMinV)*0.15||1;
+  const minV=Math.max(0,rawMinV-pad), range=(maxV-minV)||1;
+  const xOf=i=>(i+0.5)/n*100;
+  const yOf=v=>92-((v-minV)/range)*76;
+  // H maior (30/08/2026, a pedido do Gabriel: rótulos das 3 faixas colando quando os valores
+  // ficam próximos) — mais altura = mais px por ponto percentual de diferença entre valores
+  // próximos, então o mesmo MIN_SEP (em %) já separa mais na prática. Era 190.
+  const H=280;
+  const lines=series.map(s=>{
+    const pts=s.vals.map((v,i)=>v!=null?`${xOf(i)},${yOf(v)}`:null).filter(Boolean).join(' ');
+    return pts?`<polyline points="${pts}" fill="none" stroke="${s.color}" stroke-width="2.2" vector-effect="non-scaling-stroke"/>`:'';
+  }).join('');
+  // rótulos: posição fixa por nível (tentado em 30/08/2026) quebrava exatamente no cruzamento
+  // das linhas — ex. 26W32, onde N2-N3 ultrapassa N6+: o rótulo do N2-N3 continuava "sempre
+  // abaixo do PRÓPRIO ponto", mas o próprio ponto agora estava ACIMA do N6+, então o rótulo
+  // acabava colado bem em cima de onde o N6+ estava, ilegível. Voltei pro empilhamento por
+  // VALOR real (maior valor em cima, sempre bate com a ordem visual das linhas, inclusive no
+  // cruzamento) — cada rótulo nasce "GAP acima do próprio ponto" e só é empurrado pra baixo o
+  // mínimo necessário quando invadiria o rótulo anterior; um traço fino da cor da série liga
+  // ponto→rótulo sempre que ele precisar se afastar, pra nunca ficar ambíguo de quem é.
+  // GAP/MIN_SEP menores (30/08/2026, a pedido do Gabriel) — com o eixo já "zoomado" no valor
+  // real (ver minV acima), os pontos ficaram naturalmente mais espalhados, então o rótulo não
+  // precisa mais viajar tão longe do próprio ponto pra não colidir com o vizinho.
+  const GAP=6, MIN_SEP=6, LEADER_THRESHOLD=1.2;
+  let leaders='';
+  const dots=baseWeeks.map((w,i)=>{
+    const x=xOf(i);
+    const pts=series.map(s=>({color:s.color,v:s.vals[i]})).filter(p=>p.v!=null);
+    pts.forEach(p=>p.y=yOf(p.v));
+    pts.sort((a,b)=>a.y-b.y);
+    let prevLabelY=null;
+    return pts.map(p=>{
+      const natural=p.y-GAP;
+      const labelY=prevLabelY==null?natural:Math.max(natural,prevLabelY+MIN_SEP);
+      prevLabelY=labelY;
+      if(Math.abs(labelY-natural)>LEADER_THRESHOLD) leaders+=`<line x1="${x}" y1="${p.y-2}" x2="${x}" y2="${labelY+2}" stroke="${p.color}" stroke-width="0.5" opacity="0.45" vector-effect="non-scaling-stroke"/>`;
+      return `<div style="position:absolute;left:${x}%;top:${p.y}%;transform:translate(-50%,-50%);width:6px;height:6px;border-radius:50%;background:${p.color};box-shadow:0 0 0 2px var(--surface)"></div>
+        <div style="position:absolute;left:${x}%;top:${labelY}%;transform:translate(-50%,-50%);font-size:9px;font-weight:700;color:${p.color};white-space:nowrap">${p.v}</div>`;
+    }).join('');
+  }).join('');
+  const legend=`<div class="legend" style="margin:0 0 10px">${series.map(s=>`<span><i class="sw" style="background:${s.color}"></i>${s.niv}</span>`).join('')}</div>`;
+  // média dos 3 níveis por semana (30/08/2026, a pedido do Gabriel: referência rápida sem virar
+  // uma 4ª linha disputando espaço com as outras 3) — média simples dos níveis com dado na
+  // semana (nem toda semana tem os 3, ver `if(!r||!head) return null` acima).
+  const mediaSemana=i=>{ const vs=series.map(s=>s.vals[i]).filter(v=>v!=null); return vs.length?Math.round(vs.reduce((a,b)=>a+b,0)/vs.length*10)/10:null; };
+  const caps=`<div style="display:flex;gap:4px;margin-top:6px">${baseWeeks.map((w,i)=>{ const m=mediaSemana(i);
+    return `<div style="flex:1;min-width:0;text-align:center">
+      <div style="font-size:8.5px;color:var(--text-faint);font-family:var(--font-mono);white-space:nowrap">${w.replace('2025-','25').replace('2026-','26')}</div>
+      <div style="font-size:8.5px;color:var(--text-muted);font-family:var(--font-mono);white-space:nowrap">méd ${m!=null?m:'—'}</div>
+    </div>`; }).join('')}</div>`;
+  return `${legend}<div style="position:relative;height:${H}px">
+    <svg viewBox="0 0 100 100" preserveAspectRatio="none" style="position:absolute;inset:0;width:100%;height:100%;overflow:visible">${lines}${leaders}</svg>${dots}
+  </div>${caps}`;
 }
 // status ATUAL (hoje) dos leads, agrupados pela SEMANA DE ENTRADA NO CLOSER (opp): barras
 // empilhadas (opp/sql/offer/contract/closed_won/lost_deal) — mesmo padrão do sdrStatusHTML,
@@ -1157,6 +1319,48 @@ function renderAreaSdr(){
     const cell=estrF==='all'?b.porNivel?.[n]:b.porNivelEstrategia?.[n]?.[estrF]; return cell?cell.opps:null; };
   const wt=NIV.map((n,i)=>{ const ser=weeklyByNivel(oppsNivelSrc,n).slice(-8); const tg=ser.map(s=>tgtOpps(s.semana,n));
     return `<div class="card">${weekTrendHTML({label:n,color:'#667085',series:ser,targets:tg,flat:true,accentLabel:true})}</div>`; }).join('');
+  // ===== visão de gráficos (25/08/2026, a pedido da diretoria via Gabriel) — Opps Inbound/
+  // Outbound por nível (últ. 12 semanas fechadas) + MTD Real vs Budget, sempre olhando
+  // Inbound/Outbound juntos (ignora o filtro de Estratégia do topo, senão um dos 2 gráficos
+  // ficaria vazio quando o filtro está em Hunting/N2-N3/etc. — igual a referência mostrada).
+  const ultimaFechadaG=D.semanaFechada&&D.semanaFechada.semana;
+  const weeksG=Object.keys(D.sdrOppsNivel.all||{}).filter(w=>!ultimaFechadaG||w<=ultimaFechadaG).sort().slice(-12);
+  const tgtOppsEstr=(w,n,e)=>{ if((D.semanaMes?.[w]||'')<'2026-07') return null; const b=D[state.refArea]?.semanalOficial?.[w]; if(!b) return null;
+    const cell=b.porNivelEstrategia?.[n]?.[e]; return cell?cell.opps:null; };
+  const tgtTotalEstr=(w,e)=>{ const vs=NIV.map(n=>tgtOppsEstr(w,n,e)).filter(v=>v!=null); return vs.length?vs.reduce((s,v)=>s+v,0):null; };
+  const chartInbound=stackedWeeksHTML({weeks:weeksG,dataByWeek:w=>(D.sdrOppsNivel.Inbound||{})[w],targets:weeksG.map(w=>tgtTotalEstr(w,'Inbound')),keys:NIV,colors:NIV_COLOR});
+  const chartOutbound=stackedWeeksHTML({weeks:weeksG,dataByWeek:w=>(D.sdrOppsNivel.Outbound||{})[w],targets:weeksG.map(w=>tgtTotalEstr(w,'Outbound')),keys:NIV,colors:NIV_COLOR});
+  const mtdWeeksG=D.semanas.filter(w=>D.semanaMes[w]===state.mesArea&&w<=state.semanaArea).sort();
+  const sumOppsEstr=(src,e)=>mtdWeeksG.reduce((s,w)=>s+((src[w]?.porEstrategia?.[e]?.opps)||0),0);
+  const ESTR_MTD=['Inbound','Outbound'];
+  const realMtd={},budMtd={};
+  ESTR_MTD.forEach(e=>{ realMtd[e]=sumOppsEstr(D.actual.semanal,e); budMtd[e]=sumOppsEstr(D[state.refArea].semanalOficial,e); });
+  const chartMtd=mtdCompareHTML({real:realMtd,budget:budMtd,keys:ESTR_MTD,colors:STR_COLOR});
+  // GMV das opps + ticket médio (29/08/2026, a pedido do Gabriel: GMV total das opps geradas na
+  // semana — soma dos GMVs das opps da semana — e ticket médio = essa GMV ÷ volume de opps da
+  // MESMA semana, os dois do mesmo cohort). D.sdrOppsGmv vem do build_data.js: soma de
+  // amount_12_months (mesmo campo que já bucketiza nível), atribuída à semana de CRIAÇÃO da
+  // opp — mesmo recorte In+Out e mesma janela de 12 semanas dos gráficos acima.
+  const oppsInOutWeek=w=>NIV.reduce((s,n)=>s+((D.sdrOppsNivel.Inbound?.[w]||{})[n]||0)+((D.sdrOppsNivel.Outbound?.[w]||{})[n]||0),0);
+  const serGmv=weeksG.map(w=>({semana:w,valor:D.sdrOppsGmv?.[w]||0}));
+  const serTicket=weeksG.map(w=>{const o=oppsInOutWeek(w);return {semana:w,valor:o?(D.sdrOppsGmv?.[w]||0)/o:0};});
+  // sem "R$" e com todas as barras rotuladas (28/08/2026, a pedido do Gabriel) — padronizado em
+  // "X,X mi"/"X mil", igual ao fBRL do resto do app, só sem o prefixo de moeda.
+  const fMi=n=>{if(n==null)return '—';n=n||0;const a=Math.abs(n);
+    if(a>=1e6)return (n/1e6).toFixed(1).replace('.',',')+' mi';
+    if(a>=1e3)return Math.round(n/1e3)+' mil';return fN(n);};
+  const chartGmv=weekTrendHTML({label:'GMV em Opps',color:'#12B76A',series:serGmv,fmt:fMi,flat:true,height:180});
+  const chartTicket=weekTrendHTML({label:'Ticket médio',color:'#7F56D9',series:serTicket,fmt:fMi,flat:true,height:180});
+  const graficosHTML=`<div class="sec"><div class="sec-head"><h2>Opps por nível — gráficos</h2><span class="hint">últ. 12 semanas fechadas · Inbound/Outbound · ${mesLabel(state.mesArea)}</span></div>
+    <div class="grid g3">
+      <div class="card">${cardHd(KIC.estoque,'Opps Inbound — 12 semanas','opps geradas na semana, por nível de cliente')}${chartInbound}</div>
+      <div class="card">${cardHd(KIC.estoque,'Opps Outbound — 12 semanas','opps geradas na semana, por nível de cliente')}${chartOutbound}</div>
+      <div class="card">${cardHd(KIC.target,'Opps MTD — Real vs Budget','acumulado de '+mesLabel(state.mesArea))}${chartMtd}</div>
+    </div>
+    <div class="grid g2" style="margin-top:18px">
+      <div class="card">${cardHd(KIC.target,'GMV gerado em Opps — 12 semanas','soma do GMV das opps geradas na semana (amount 12m) · In + Out')}${chartGmv}</div>
+      <div class="card">${cardHd(KIC.target,'Ticket médio das Opps — 12 semanas','GMV das opps ÷ opps geradas na semana · In + Out')}${chartTicket}</div>
+    </div></div>`;
   // resumo de produtividade por FTE (uma linha)
   const prodResumo=`<div class="card" style="display:flex;gap:30px;flex-wrap:wrap;align-items:center;padding:16px 22px">
     <span class="eyebrow">Produtividade por FTE · ${semanaLabel(week)}${estrF!=='all'?' · '+estrF:''}</span>
@@ -1250,8 +1454,9 @@ function renderAreaSdr(){
   rowsOwner=rowsOwner.filter(r=>!ehNaoSdr(r.email)&&r.estrategia&&r.ativo);
   rowsOwner.sort((a,b)=>contOwnerAt(b,week)-contOwnerAt(a,week));
   const table=groupedTable({rows:rowsOwner,groupBy:r=>r.estrategia,groupOrder:STR_ORDER,cols,kind:'sdr',totals:true,sort:state.sdrSort,hd:cardHd(KIC.users,'SDR · por pessoa','opps, C1, mix por nível e produtividade/BD')});
-  $('viewArea').innerHTML=`
-    <div class="sec"><div class="sec-head"><h2>Resultado semanal</h2><span class="hint">${semanaLabel(week)}${estrF!=='all'?' · '+estrF:''}</span></div>
+  const toggleBar=`<div class="sec-head" style="margin-bottom:0"><span class="hint">${semanaLabel(week)}${estrF!=='all'?' · '+estrF:''}</span>${sdrViewToggleHTML()}</div>`;
+  $('viewArea').innerHTML=state.sdrView==='graficos'?`${toggleBar}${graficosHTML}`:`
+    <div class="sec"><div class="sec-head"><h2>Resultado semanal</h2>${sdrViewToggleHTML()}</div>
       <div class="grid g${kpis.length}">${kpis.map(([l,v,s,d,cls,icon])=>`<div class="kpi ${cls||''}">${icon?`<span class="kpi-ic">${icon}</span>`:''}<span class="rail"></span><div class="lbl">${l}</div><div class="sub2">${d||''}</div><div class="num n">${v}</div><div class="sub"><span>${s}</span></div></div>`).join('')}</div></div>
     <div class="sec"><div class="sec-head"><h2>Evolução do resultado</h2>${granToggleHTML()}</div>
       <div class="grid g2">
@@ -1415,6 +1620,7 @@ function renderAreaClosers(){
     <div class="sec"><div class="sec-head"><h2>Evolução do resultado</h2>${granToggleHTML()}</div>
       <div class="grid">
         <div class="card">${cardHd(KIC.estoque,'Estoque do funil Closer','snapshot no fim de cada semana · últ. 16 · Opp (inclui Issues) → SQL → Offer → Contract')}${closerEstoqueHTML(filtF)}</div>
+        <div class="card">${cardHd(KIC.users,'Opps por closer · por nível','estoque atual ÷ headcount real de closers (Dados/sales_goals.csv) · últ. 6 semanas · sempre N2-N3/N4-N5/N6+, ignora o filtro de estratégia/nível')}${closerOppsPorFteHTML()}</div>
       </div></div>
     ${closerCohortSectionHTML()}
     <div class="sec"><div class="sec-head"><h2>CW por nível de cliente</h2><span class="hint">fechamentos por semana · últimas 8 semanas</span></div>
