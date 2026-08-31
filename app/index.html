@@ -412,20 +412,28 @@ function weekTrendHTML({label,sub,color,series,fmt,targets,flat,accentLabel,labe
 // pela diretoria, inspirada numa referência externa) — mesmo esqueleto visual do weekTrendHTML
 // (.wt/.wtcol/.wtbar/.wttgt), só que o .wtbar vira um flex column-reverse com 1 div por
 // segmento em vez de 1 cor sólida, pra empilhar os níveis dentro da mesma barra.
-function stackedWeeksHTML({weeks,dataByWeek,targets,keys,colors,fmt}){
+function stackedWeeksHTML({weeks,dataByWeek,targets,keys,colors,fmt,segLabels,barMaxWidth}){
   fmt=fmt||fN;
   if(!weeks||!weeks.length) return '<span class="miss">Sem dado suficiente para o período.</span>';
   const totals=weeks.map(w=>keys.reduce((s,k)=>s+((dataByWeek(w)||{})[k]||0),0));
   const tvals=(targets||[]).filter(v=>v!=null&&v>0);
   const max=Math.max(...totals,...tvals,1)*1.18;
+  // segLabels/barMaxWidth (31/08/2026, a pedido do Gabriel: card "Estoque aberto por nível" do
+  // Closer) — opcionais, sem valor default: não mudam os usos já existentes (gráficos de Opps
+  // In/Out da SDR, 12 colunas — não têm espaço pra rótulo por segmento nem barra larga).
+  const barStyle=barMaxWidth?`max-width:${barMaxWidth}px`:'';
   const cols=weeks.map((w,i)=>{
     const d=dataByWeek(w)||{}, total=totals[i], h=Math.max(2,(total/max)*100);
     const t=targets?targets[i]:null;
     const tgt=(t!=null&&t>0)?`<div class="wttgt" style="bottom:${Math.min(100,(t/max)*100)}px"></div>`:'';
-    const segs=keys.map(k=>{const v=d[k]||0,segH=total?(v/total)*h:0;return segH?`<div style="height:${segH}px;background:${colors[k]}"></div>`:'';}).join('');
+    const segs=keys.map(k=>{const v=d[k]||0,segH=total?(v/total)*h:0;
+      if(!segH) return '';
+      const lbl=segLabels&&segH>=12?`<span style="color:#fff;font-size:9px;font-weight:700;font-family:var(--font-mono)">${fmt(v)}</span>`:'';
+      return `<div style="height:${segH}px;background:${colors[k]};display:flex;align-items:center;justify-content:center;overflow:hidden" title="${k}: ${fmt(v)}">${lbl}</div>`;
+    }).join('');
     return `<div class="wtcol" title="${w}: ${fmt(total)}${(t!=null&&t>0)?' · meta '+fmt(t):''}">
       <div class="wtplot"><div class="wtval">${fmt(total)}</div>
-      <div class="wtbar" style="height:${h}px;background:none;display:flex;flex-direction:column-reverse;overflow:hidden">${segs}</div>${tgt}</div>
+      <div class="wtbar" style="height:${h}px;background:none;display:flex;flex-direction:column-reverse;overflow:hidden;${barStyle}">${segs}</div>${tgt}</div>
       <div class="wtlbl">${w.replace(/^\d{4}-/,'')}</div></div>`;
   }).join('');
   const legend=`<div class="legend" style="margin-top:10px">${keys.map(k=>`<span><i class="sw" style="background:${colors[k]}"></i>${k}</span>`).join('')}${tvals.length?'<span><i class="sw" style="background:none;border-top:2px dashed var(--text);height:0;width:12px"></i>Meta</span>':''}</div>`;
@@ -1136,14 +1144,69 @@ function cohortUnifiedHTML(periods,headerHtml){
     </div>
   </div>`;
 }
+// Curva de maturidade (31/08/2026, PROTÓTIPO a pedido do Gabriel — avaliar se é indicador
+// melhor que a meta fixa acima, ainda não substitui nada). Ideia: cada safra semanal em
+// D.closerCohortStatus[key] já é, HOJE, uma leitura de "% convertido depois de X semanas de
+// vida" — uma safra de 20 semanas atrás mostra sua conversão com 20 semanas de maturidade; uma
+// de 2 semanas atrás, com 2. Juntando TODAS as safras históricas (2023-hoje) e agrupando pela
+// idade (não pelo calendário), dá pra reconstruir a curva média "com N semanas de vida, X%
+// típico chega em SQL+, Y% típico já é Closed Won" — SEM precisar rastrear cada safra ao longo
+// do tempo (só usa o snapshot atual de cada uma, que já é o que build_data.js gera).
+// weekStartDateUTC (já existe acima) resolve qualquer semana pra uma data real — precisa dela
+// em vez de D.semanas.indexOf porque D.semanas só cobre 2025+, e o histórico de safra vai até
+// 2023.
+function closerMaturityCurveHTML(key){
+  const raw=(D.closerCohortStatus&&D.closerCohortStatus[key])||{};
+  const weeks=Object.keys(raw).sort();
+  const refWeek=D.semanaFechada&&D.semanaFechada.semana;
+  if(!refWeek||!weeks.length) return '<span class="miss">Sem dado suficiente.</span>';
+  const refDate=weekStartDateUTC(refWeek);
+  const MAX_MAT=20;
+  const buckets={};
+  weeks.forEach(w=>{
+    const s=raw[w]; if(!s) return;
+    const total=s.opp+s.sql+s.offer+s.contract+s.closed_won+s.lost_deal;
+    if(!total) return;
+    const mat=Math.round((refDate-weekStartDateUTC(w))/(7*86400000));
+    if(mat<1||mat>MAX_MAT) return; // maturidade 0 = semana corrente/parcial, fora
+    const sqlOuAlem=s.sql+s.offer+s.contract+s.closed_won+s.lost_deal;
+    const b=buckets[mat]=buckets[mat]||{sql:[],cw:[]};
+    b.sql.push(sqlOuAlem/total*100);
+    b.cw.push(s.closed_won/total*100);
+  });
+  const mats=Object.keys(buckets).map(Number).sort((a,b)=>a-b);
+  if(mats.length<3) return '<span class="miss">Sem safras suficientes pra montar a curva.</span>';
+  const avg=arr=>arr.reduce((s,v)=>s+v,0)/arr.length;
+  const n=mats.length, xOf=i=>(i+0.5)/n*100, yOf=v=>92-(v/100)*80, H=210;
+  const ptsSql=mats.map((m,i)=>`${xOf(i)},${yOf(avg(buckets[m].sql))}`).join(' ');
+  const ptsCw=mats.map((m,i)=>`${xOf(i)},${yOf(avg(buckets[m].cw))}`).join(' ');
+  const COR_SQL='#667085', COR_CW='var(--accent)';
+  const dots=mats.map((m,i)=>{
+    const x=xOf(i), vSql=Math.round(avg(buckets[m].sql)), vCw=Math.round(avg(buckets[m].cw)), nSamp=buckets[m].sql.length;
+    return `<div style="position:absolute;left:${x}%;top:${yOf(vSql)}%;transform:translate(-50%,-50%);width:5px;height:5px;border-radius:50%;background:${COR_SQL};box-shadow:0 0 0 2px var(--surface)" title="maturidade ${m} sem · ${vSql}% chegou em SQL+ · média de ${nSamp} safras"></div>
+      <div style="position:absolute;left:${x}%;top:${yOf(vSql)}%;transform:translate(-50%,-180%);font-size:8.5px;font-weight:700;color:${COR_SQL};white-space:nowrap">${vSql}%</div>
+      <div style="position:absolute;left:${x}%;top:${yOf(vCw)}%;transform:translate(-50%,-50%);width:5px;height:5px;border-radius:50%;background:${COR_CW};box-shadow:0 0 0 2px var(--surface)" title="maturidade ${m} sem · ${vCw}% virou Closed Won · média de ${nSamp} safras"></div>
+      <div style="position:absolute;left:${x}%;top:${yOf(vCw)}%;transform:translate(-50%,150%);font-size:8.5px;font-weight:700;color:${COR_CW};white-space:nowrap">${vCw}%</div>`;
+  }).join('');
+  const caps=`<div style="display:flex;gap:2px;margin-top:8px">${mats.map(m=>`<div style="flex:1;min-width:0;text-align:center;font-size:8px;color:var(--text-faint);font-family:var(--font-mono)">${m}s</div>`).join('')}</div>`;
+  const legend=`<div class="legend" style="margin:0 0 10px"><span><i class="sw" style="background:${COR_SQL}"></i>% chegou em SQL+ (acumulado)</span><span><i class="sw" style="background:${COR_CW}"></i>% virou Closed Won (acumulado)</span></div>`;
+  return `${legend}<div style="position:relative;height:${H}px">
+    <svg viewBox="0 0 100 100" preserveAspectRatio="none" style="position:absolute;inset:0;width:100%;height:100%;overflow:visible">
+      <polyline points="${ptsSql}" fill="none" stroke="${COR_SQL}" stroke-width="2" vector-effect="non-scaling-stroke"/>
+      <polyline points="${ptsCw}" fill="none" stroke="${COR_CW}" stroke-width="2" vector-effect="non-scaling-stroke"/>
+    </svg>${dots}
+  </div>${caps}<div style="text-align:center;font-size:9.5px;color:var(--text-faint);margin-top:8px">maturidade = semanas desde que a opp entrou no funil · média de todas as safras históricas (2023-hoje) que já tiveram essa idade</div>`;
+}
 function closerCohortSectionHTML(){
   const tab=COHORT_TABS.some(([k])=>k===state.cohortTab)?state.cohortTab:'all';
   const tabs=`<div class="gtoggle">${COHORT_TABS.map(([k,l])=>`<button class="${tab===k?'on':''}" onclick="setCohortTab('${k}')">${l}</button>`).join('')}</div>`;
   const periods=cohortPeriods(tab);
   const gran=tab==='N6+'?'safra mensal · últimas 4':'safra semanal · últimas 6';
   const header=cardHd(KIC.check,'Situação atual das opps por safra de entrada','safra = quando virou opp · '+gran+' · situação de hoje');
+  const maturityHeader=cardHd(KIC.target,'PROTÓTIPO · Curva de maturidade — conversão por semanas desde a entrada','usa a mesma aba acima · histórico completo (2023-hoje), sempre semanal mesmo na aba N6+');
   return `<div class="sec"><div class="sec-head"><h2>Visão Cohort <span class="hint" style="font-weight:400;text-transform:none;margin-left:6px">independe do filtro de Estratégia/Nível do topo — use as abas acima</span></h2>${tabs}</div>
     ${cohortUnifiedHTML(periods,header)}
+    <div class="card" style="margin-top:16px">${maturityHeader}${closerMaturityCurveHTML(tab)}</div>
   </div>`;
 }
 // estoque do funil de negociação do Closer: barras empilhadas (Opp/SQL/Offer/Contract) por
@@ -1155,7 +1218,12 @@ function closerEstoqueHTML(estrF){ return closerEstoqueBars((D.closerEstoque&&D.
 // núcleo do gráfico de Estoque Closer — extraído (05/08/2026), ver sdrEstoqueBars acima.
 function closerEstoqueBars(all){
   const gran=state.evolGran||'semana';
-  const rows=gran==='mes'?estoqueParaMes(all).slice(-12):all.slice(-16);
+  // últ. 6 semanas FECHADAS (31/08/2026, a pedido do Gabriel: alinhar com o card "Opps por
+  // closer · por nível" logo ao lado — mesma janela, mesmo motivo: a semana em andamento tem
+  // snapshot parcial). Era 16, sem filtrar a semana atual.
+  const ultimaFechada=D.semanaFechada&&D.semanaFechada.semana;
+  const allFechadas=gran==='mes'?all:all.filter(r=>!ultimaFechada||r.semana<=ultimaFechada);
+  const rows=gran==='mes'?estoqueParaMes(all).slice(-12):allFechadas.slice(-6);
   if(!rows.length) return '<span class="miss">Sem série de estoque — regenere o app_data.js com o build_data.js atualizado.</span>';
   const tots=rows.map(r=>r.opp+r.issues+r.sql+r.offer+r.contract);
   const max=Math.max(...tots,1), H=190;
@@ -1165,7 +1233,10 @@ function closerEstoqueBars(all){
     const tot=tots[i];
     const r={opp:r0.opp+r0.issues, sql:r0.sql, offer:r0.offer, contract:r0.contract, semana:r0.semana};
     const rotulo=gran==='mes'?mesLabel(r.semana):semanaLabel(r.semana);
-    const segs=ES.map(([k,c,lc])=>{const hh=h(r[k]);return `<div class="eseg" style="height:${hh}px;background:${c}">${hh>=13?`<span class="eseglbl" style="color:${lc}">${fN(r[k])}</span>`:''}</div>`;}).join('');
+    // max-width maior (31/08/2026, a pedido do Gabriel) — com só 6 colunas (era 16) sobra
+    // espaço; sobrescreve o teto de 46px do .eseg compartilhado, mesma técnica já usada no
+    // COHORT_SEG acima.
+    const segs=ES.map(([k,c,lc])=>{const hh=h(r[k]);return `<div class="eseg" style="height:${hh}px;background:${c};max-width:76px">${hh>=13?`<span class="eseglbl" style="color:${lc}">${fN(r[k])}</span>`:''}</div>`;}).join('');
     return `<div class="ecol" title="${rotulo} · total ${fN(tot)} — Opp ${fN(r.opp)} (inclui Issues) · SQL ${fN(r.sql)} · Offer ${fN(r.offer)} · Contract ${fN(r.contract)}">
       <div class="etot">${fN(tot)}</div>${segs}
       <div class="ecap">${gran==='mes'?mesLabelShort(r.semana):r.semana.replace('2025-','25').replace('2026-','26')}</div></div>`;
@@ -1174,6 +1245,34 @@ function closerEstoqueBars(all){
   const data=rows.map((r,i)=>{const d=i>0?tots[i]-tots[i-1]:null;const col=d==null?'':(d>0?'var(--success)':d<0?'var(--danger)':'var(--text-faint)');return `<div class="edcell" style="${col?'color:'+col+';font-weight:700':''}">${d==null?'—':(d>0?'+':d<0?'−':'')+fN(Math.abs(d))}</div>`;}).join('');
   return `${legend}<div class="estoque">${cols}</div>
     <div class="edata-lbl">Variação do estoque · ${gran==='mes'?'MoM':'WoW'}</div><div class="edata">${data}</div>`;
+}
+// estoque total (todos os estágios) do funil Closer, por NÍVEL de cliente (31/08/2026, a pedido
+// do Gabriel) — complementa o card de Estoque acima (que quebra por estágio Opp→Contract, um
+// nível de cada vez conforme o filtro) mostrando os 3 níveis lado a lado, sempre juntos, mesmo
+// padrão do "Opps por closer · por nível" (ignora o filtro de estratégia/nível, últ. 6 semanas
+// fechadas). Reaproveita stackedWeeksHTML (já usado nos gráficos de Opps In/Out da SDR).
+function closerEstoquePorNivelHTML(){
+  const ultimaFechada=D.semanaFechada&&D.semanaFechada.semana;
+  const rowsFechadas=((D.closerEstoque&&D.closerEstoque.all)||[]).filter(r=>!ultimaFechada||r.semana<=ultimaFechada);
+  const semanas=rowsFechadas.slice(-6);
+  const weeks=semanas.map(r=>r.semana);
+  if(!weeks.length) return '<span class="miss">Sem série de estoque — regenere o app_data.js com o build_data.js atualizado.</span>';
+  const totalAllByWeek={}; semanas.forEach(r=>totalAllByWeek[r.semana]=r.opp+r.issues+r.sql+r.offer+r.contract);
+  const porNivel={};
+  NIV.forEach(niv=>{ const byWeek={}; ((D.closerEstoque&&D.closerEstoque[niv])||[]).forEach(r=>byWeek[r.semana]=r.opp+r.issues+r.sql+r.offer+r.contract); porNivel[niv]=byWeek; });
+  // "Sem nível" (31/08/2026, a pedido do Gabriel: batia 1 a menos que o total do card de cima) —
+  // opp/lead sem amount_12_months válido pra bucketizar (bucketFromAmount retorna "Sem nivel",
+  // fora dos 3 buckets N2-N3/N4-N5/N6+) ainda conta no total geral (D.closerEstoque.all) mas não
+  // tinha onde aparecer aqui. Calculado como resíduo (total geral − soma dos 3 níveis) pra sempre
+  // bater exatamente com o "Estoque do funil Closer".
+  const KEYS_COM_RESIDUO=[...NIV,'Sem nível'];
+  const COLORS_COM_RESIDUO={...NIV_COLOR,'Sem nível':'#D0D5DD'};
+  const dataByWeek=w=>{
+    const n2=porNivel['N2-N3'][w]||0, n4=porNivel['N4-N5'][w]||0, n6=porNivel['N6+'][w]||0;
+    const resto=Math.max(0,(totalAllByWeek[w]||0)-n2-n4-n6);
+    return {'N2-N3':n2,'N4-N5':n4,'N6+':n6,'Sem nível':resto};
+  };
+  return stackedWeeksHTML({weeks,dataByWeek,keys:KEYS_COM_RESIDUO,colors:COLORS_COM_RESIDUO,segLabels:true,barMaxWidth:76});
 }
 // estoque de ativação (Onboarding): barras empilhadas (Inativo/Ativando <10K/Ativo >10K) por
 // semana — reclassificado em 01-03/08/2026 a pedido do Gabriel (antes era CW/1k+/5k+, saía do
@@ -1619,7 +1718,8 @@ function renderAreaClosers(){
       <div class="grid g${kpis.length}">${kpis.map(([l,v,s,d,cls,icon])=>`<div class="kpi ${cls||''}">${icon?`<span class="kpi-ic">${icon}</span>`:''}<span class="rail"></span><div class="lbl">${l}</div><div class="sub2">${d||''}</div><div class="num n">${v}</div><div class="sub"><span>${s}</span></div></div>`).join('')}</div></div>
     <div class="sec"><div class="sec-head"><h2>Evolução do resultado</h2>${granToggleHTML()}</div>
       <div class="grid">
-        <div class="card">${cardHd(KIC.estoque,'Estoque do funil Closer','snapshot no fim de cada semana · últ. 16 · Opp (inclui Issues) → SQL → Offer → Contract')}${closerEstoqueHTML(filtF)}</div>
+        <div class="card">${cardHd(KIC.estoque,'Estoque do funil Closer','snapshot no fim de cada semana · últ. 6 · Opp (inclui Issues) → SQL → Offer → Contract')}${closerEstoqueHTML(filtF)}</div>
+        <div class="card">${cardHd(KIC.estoque,'Estoque aberto por nível','snapshot no fim de cada semana · últ. 6 · sempre N2-N3/N4-N5/N6+, ignora o filtro de estratégia/nível')}${closerEstoquePorNivelHTML()}</div>
         <div class="card">${cardHd(KIC.users,'Opps por closer · por nível','estoque atual ÷ headcount real de closers (Dados/sales_goals.csv) · últ. 6 semanas · sempre N2-N3/N4-N5/N6+, ignora o filtro de estratégia/nível')}${closerOppsPorFteHTML()}</div>
       </div></div>
     ${closerCohortSectionHTML()}
